@@ -1,4 +1,4 @@
-# dcal (v0.1.0)
+# dcal (v0.2.0)
 
 A modern, fast, and standalone CLI calendar utility written in Rust. It serves as a drop-in or enhanced replacement for the classic `cal`/`ncal` commands, featuring auto-localization, grid alignment, customizable month ranges, and beautiful terminal borders.
 
@@ -52,6 +52,7 @@ makepkg -si
 * `dcal -m` — Start the week on Sunday instead of Monday.
 * `dcal -e` / `dcal -r` — Force English or Russian output regardless of system locale (the leftmost flag takes priority).
 * `dcal -v` / `dcal -h` — Show version or help message.
+* `dcal -i` — Interactive mode (navigate months with arrow keys, exit with Q/Esc)
 
 ---
 
@@ -68,6 +69,7 @@ makepkg -si
 * **Красивые рамки:** Опциональная отрисовка аккуратных псевдографических границ вокруг месяцев.
 * **Подсчет недель:** Отображает общее количество недель в году по стандарту ISO-8601 при выводе за год.
 * `dcal -v` / `dcal -h` — Показать версию или справку.
+* `dcal -i` — Интерактивный режим (листание месяцев стрелками, выход на Q или Esc)
 
 ## Установка на Arch Linux
 

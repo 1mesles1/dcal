@@ -1,8 +1,8 @@
 # Maintainer: measles <denkori80@gmail.com>
 pkgname=dcal
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="A modern, fast, and standalone CLI calendar utility written in Rust with borders and localization support"
+pkgdesc="A modern, fast, and standalone CLI calendar utility written in Rust with borders, interactive navigation and localization support"
 arch=('x86_64' 'aarch64')
 url="https://github.com/1mesles1/dcal"
 license=('GPL3')
@@ -26,3 +26,4 @@ package() {
   install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
   install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
+

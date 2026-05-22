@@ -1,6 +1,13 @@
 use chrono::{Datelike, Local, NaiveDate, Weekday, Duration};
 use std::env;
 use sys_locale::get_locale;
+use std::io::{stdout, Write};
+use crossterm::{
+    execute,
+    terminal::{Clear, ClearType},
+    cursor::{MoveTo, Hide, Show},
+    event::{read, Event, KeyCode, KeyEventKind},
+};
 
 const MONTHS_RU: [&str; 12] = [
     "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
@@ -29,6 +36,7 @@ fn print_help() {
     println!("  -e          Force English language output");
     println!("  -r          Force Russian language output");
     println!("  -m          Start the week on Sunday instead of Monday");
+    println!("  -i          Interactive mode (navigate months with arrow keys, exit with Q/Esc)");
 }
 
 fn main() {
@@ -39,7 +47,7 @@ fn main() {
             print_help();
             std::process::exit(0);
         } else if arg == "-v" || arg == "--version" {
-            println!("dcal version 0.1.0");
+            println!("dcal version 0.2.0");
             std::process::exit(0);
         }
     }
@@ -60,7 +68,8 @@ fn main() {
     let mut cols_count = 4;
     let mut mode_selected = false;
     let mut show_weeks_total = false;
-    let mut is_year_mode = false; // Флаг полного вывода года
+    let mut is_year_mode = false;
+    let mut interactive_mode = false;
 
     for arg in &args {
         if !arg.starts_with('-') || arg.len() < 2 {
@@ -90,6 +99,8 @@ fn main() {
                 use_border = true;
             } else if c == 'm' {
                 sunday_first = true;
+            } else if c == 'i' {
+                interactive_mode = true;
             } else if c == 'e' {
                 if !lang_overridden {
                     is_ru = false;
@@ -145,41 +156,120 @@ fn main() {
         cols_count = 1;
     }
 
-    let mut months_to_render = Vec::new();
-    let mut y = start_year;
-    let mut m = start_month;
+    if interactive_mode {
+        crossterm::terminal::enable_raw_mode().unwrap();
+        // Полностью очищаем экран и прячем курсор, чтобы не мерцал
+        execute!(stdout(), Clear(ClearType::All), Hide).unwrap();
+        
+        loop {
+            // Возвращаем курсор в начало координат перед рендером
+            execute!(stdout(), MoveTo(0, 0)).unwrap();
+            
+            let mut months_to_render = Vec::new();
+            let mut y = start_year;
+            let mut m = start_month;
 
-    for _ in 0..months_count {
-        months_to_render.push((y, m));
-        m += 1;
-        if m > 12 {
-            m = 1;
-            y += 1;
+            for _ in 0..months_count {
+                months_to_render.push((y, m));
+                m += 1;
+                if m > 12 {
+                    m = 1;
+                    y += 1;
+                }
+            }
+
+            let chunks: Vec<&[(i32, i32)]> = months_to_render.chunks(cols_count).collect();
+            for (i, chunk) in chunks.iter().enumerate() {
+                // Вызываем специальный интерактивный принтер с \r\n
+                print_months_row_interactive(chunk, is_ru, now, use_border, sunday_first, is_year_mode);
+                if i < chunks.len() - 1 {
+                    print!("\r\n");
+                }
+            }
+
+            if show_weeks_total {
+                if let Some(last_day_of_year) = NaiveDate::from_ymd_opt(start_year, 12, 28) {
+                    let total_weeks = last_day_of_year.iso_week().week();
+                    print!("\r\n");
+                    if is_ru {
+                        print!("Всего недель в {} году: {}", start_year, total_weeks);
+                    } else {
+                        print!("Total weeks in year {}: {}", start_year, total_weeks);
+                    }
+                }
+            }
+            
+            // Чистим всё ниже нашего выведенного календаря
+            execute!(stdout(), Clear(ClearType::FromCursorDown)).unwrap();
+            stdout().flush().unwrap();
+
+            if let Event::Key(key) = read().unwrap() {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                            break;
+                        }
+                        KeyCode::Right | KeyCode::Up => {
+                            start_month += 1;
+                            if start_month > 12 {
+                                start_month = 1;
+                                start_year += 1;
+                            }
+                        }
+                        KeyCode::Left | KeyCode::Down => {
+                            start_month -= 1;
+                            if start_month < 1 {
+                                start_month = 12;
+                                start_year -= 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
-    }
+        
+        // Восстанавливаем курсор и нормальный режим терминала
+        execute!(stdout(), Show).unwrap();
+        crossterm::terminal::disable_raw_mode().unwrap();
+        println!(); 
+    } else {
+        // Обычный CLI режим без возвратов каретки
+        let mut months_to_render = Vec::new();
+        let mut y = start_year;
+        let mut m = start_month;
 
-    let chunks: Vec<&[(i32, i32)]> = months_to_render.chunks(cols_count).collect();
-    for (i, chunk) in chunks.iter().enumerate() {
-        print_months_row(chunk, is_ru, now, use_border, sunday_first, is_year_mode);
-        if i < chunks.len() - 1 {
-            println!();
+        for _ in 0..months_count {
+            months_to_render.push((y, m));
+            m += 1;
+            if m > 12 {
+                m = 1;
+                y += 1;
+            }
         }
-    }
 
-    if show_weeks_total {
-        if let Some(last_day_of_year) = NaiveDate::from_ymd_opt(start_year, 12, 28) {
-            let total_weeks = last_day_of_year.iso_week().week();
-            println!();
-            if is_ru {
-                println!("Всего недель в {} году: {}", start_year, total_weeks);
-            } else {
-                println!("Total weeks in year {}: {}", start_year, total_weeks);
+        let chunks: Vec<&[(i32, i32)]> = months_to_render.chunks(cols_count).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            print_months_row(chunk, is_ru, now, use_border, sunday_first, is_year_mode);
+            if i < chunks.len() - 1 {
+                println!();
+            }
+        }
+
+        if show_weeks_total {
+            if let Some(last_day_of_year) = NaiveDate::from_ymd_opt(start_year, 12, 28) {
+                let total_weeks = last_day_of_year.iso_week().week();
+                println!();
+                if is_ru {
+                    println!("Всего недель в {} году: {}", start_year, total_weeks);
+                } else {
+                    println!("Total weeks in year {}: {}", start_year, total_weeks);
+                }
             }
         }
     }
 }
 
-// Функция теперь принимает флаг force_max_height. Если false — высота подстраивается под реальные недели ряда.
 fn generate_month_lines(year: i32, month: i32, is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, required_weeks: usize) -> Vec<String> {
     let mut lines = Vec::new();
 
@@ -272,7 +362,6 @@ fn generate_month_lines(year: i32, month: i32, is_ru: bool, today: NaiveDate, us
         }
     }
 
-    // Расчет высоты: шапка (2 без рамки, 4 с рамкой) + требуемое число строк с датами
     let target_grid_height = if use_border { 4 + required_weeks } else { 2 + required_weeks };
     
     while lines.len() < target_grid_height {
@@ -294,7 +383,6 @@ fn generate_month_lines(year: i32, month: i32, is_ru: bool, today: NaiveDate, us
     lines
 }
 
-// Вспомогательная функция для определения, сколько строк с цифрами требует конкретный месяц
 fn get_required_weeks_for_month(year: i32, month: i32, sunday_first: bool) -> usize {
     let first_day = NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap();
     let weekday_offset = if sunday_first {
@@ -309,15 +397,14 @@ fn get_required_weeks_for_month(year: i32, month: i32, sunday_first: bool) -> us
     };
     let total_days = next_month_date.signed_duration_since(first_day).num_days() as usize;
     
-    // Округляем вверх деление суммы смещения и общего числа дней на 7
     (weekday_offset + total_days + 6) / 7
 }
 
+// Стандартный вывод для CLI режима
 fn print_months_row(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, is_year_mode: bool) {
-    // Вычисляем максимальное число недель среди месяцев в текущем ряду
     let mut required_weeks = 4;
     if is_year_mode {
-        required_weeks = 6; // Для полного года держим монолитные 6 строк
+        required_weeks = 6;
     } else {
         for &(year, month) in chunk {
             let weeks = get_required_weeks_for_month(year, month, sunday_first);
@@ -332,11 +419,7 @@ fn print_months_row(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_bor
         all_months_lines.push(generate_month_lines(year, month, is_ru, today, use_border, sunday_first, required_weeks));
     }
 
-    // Итоговое число строк вывода
-    let mut total_output_rows = required_weeks + 2; // Без рамки: недели + 2 строки шапки
-    if use_border {
-        total_output_rows = required_weeks + 5; // С рамкой: недели + 4 строки шапки + 1 нижняя линия
-    }
+    let total_output_rows = if use_border { required_weeks + 5 } else { required_weeks + 2 };
     let block_width = if use_border { 22 } else { 20 };
 
     for line_idx in 0..total_output_rows {
@@ -356,6 +439,49 @@ fn print_months_row(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_bor
             row_output.push_str("    ");
         }
         println!("{}", row_output.trim_end());
+    }
+}
+
+// Специальный вывод для интерактивного режима (с жестким возвратом каретки \r\n)
+fn print_months_row_interactive(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, is_year_mode: bool) {
+    let mut required_weeks = 4;
+    if is_year_mode {
+        required_weeks = 6;
+    } else {
+        for &(year, month) in chunk {
+            let weeks = get_required_weeks_for_month(year, month, sunday_first);
+            if weeks > required_weeks {
+                required_weeks = weeks;
+            }
+        }
+    }
+
+    let mut all_months_lines = Vec::new();
+    for &(year, month) in chunk {
+        all_months_lines.push(generate_month_lines(year, month, is_ru, today, use_border, sunday_first, required_weeks));
+    }
+
+    let total_output_rows = if use_border { required_weeks + 5 } else { required_weeks + 2 };
+    let block_width = if use_border { 22 } else { 20 };
+
+    for line_idx in 0..total_output_rows {
+        let mut row_output = String::new();
+        for month_lines in &all_months_lines {
+            let raw_line = &month_lines[line_idx];
+            let mut padded_line = raw_line.clone();
+            
+            let visible_len = strip_ansi_len(&raw_line);
+            if visible_len < block_width {
+                for _ in 0..(block_width - visible_len) {
+                    padded_line.push(' ');
+                }
+            }
+
+            row_output.push_str(&padded_line);
+            row_output.push_str("    ");
+        }
+        // ИСПРАВЛЕНИЕ: принудительный возврат каретки \r\n для предотвращения сползания текста
+        print!("{}\r\n", row_output.trim_end());
     }
 }
 
