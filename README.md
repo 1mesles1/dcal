@@ -4,8 +4,8 @@ A modern, fast, and standalone CLI calendar utility written in Rust. It serves a
 
 
 ## Screenshots
-[<img src="screenshots/01.png" width="400">](screenshots/01.png) [<img src="screenshots/02.png" width="400">](screenshots/02.png)
-[<img src="screenshots/03.png" width="400">](screenshots/03.png) [<img src="screenshots/04.png" width="400">](screenshots/04.png)
+[<img src="screenshots/01.png" width="400">](screenshots/01.png) [<img src="screenshots/04.png" width="400">](screenshots/04.png)
+[<img src="screenshots/03.png" width="400">](screenshots/03.png) [<img src="screenshots/02.png" width="400">](screenshots/02.png)
 
 [Читать на русском языке](#русский)
 
