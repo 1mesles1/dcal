@@ -1,10 +1,13 @@
 use chrono::{Datelike, Local, NaiveDate, Weekday, Duration};
 use std::env;
 use sys_locale::get_locale;
-use std::io::{stdout, Write};
+use std::io::{stdout, Write, BufRead, BufReader};
+use std::fs::{self, File};
+use std::path::PathBuf;
+use std::collections::BTreeMap;
 use crossterm::{
     execute,
-    terminal::{Clear, ClearType},
+    terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
     cursor::{MoveTo, Hide, Show},
     event::{read, Event, KeyCode, KeyEventKind},
 };
@@ -19,8 +22,13 @@ const MONTHS_EN: [&str; 12] = [
 ];
 
 const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[32m";
 const INVERT: &str = "\x1b[7m";
 const RESET: &str = "\x1b[0m";
+
+struct EventStorage {
+    events: BTreeMap<NaiveDate, Vec<String>>,
+}
 
 fn print_help() {
     println!("Usage: dcal [options]");
@@ -37,6 +45,43 @@ fn print_help() {
     println!("  -r          Force Russian language output");
     println!("  -m          Start the week on Sunday instead of Monday");
     println!("  -i          Interactive mode (navigate months with arrow keys, exit with Q/Esc)");
+    println!("  -d          Enable events display. Highlights days with events in green and");
+    println!("              lists descriptions below the grid for the rendered period.");
+    println!("              Data file: ~/.config/dcal/events.txt");
+    println!("              Format: DD.MM.YYYY - event description (e.g., 23.05.2026 - Clean room)");
+}
+
+fn load_events() -> EventStorage {
+    let mut storage = BTreeMap::new();
+    
+    if let Some(home_dir) = env::var_os("HOME").map(PathBuf::from) {
+        let config_dir = home_dir.join(".config").join("dcal");
+        let file_path = config_dir.join("events.txt");
+
+        if !config_dir.exists() {
+            let _ = fs::create_dir_all(&config_dir);
+        }
+
+        if !file_path.exists() {
+            let _ = File::create(&file_path);
+        }
+
+        if let Ok(file) = File::open(&file_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                if let Some(pos) = line.find(" - ") {
+                    let date_str = line[..pos].trim();
+                    let desc = line[pos + 3..].trim().to_string();
+
+                    if let Ok(date) = NaiveDate::parse_from_str(date_str, "%d.%m.%Y") {
+                        storage.entry(date).or_insert_with(Vec::new).push(desc);
+                    }
+                }
+            }
+        }
+    }
+
+    EventStorage { events: storage }
 }
 
 fn main() {
@@ -47,7 +92,7 @@ fn main() {
             print_help();
             std::process::exit(0);
         } else if arg == "-v" || arg == "--version" {
-            println!("dcal version 0.2.0");
+            println!("dcal version 0.3.0");
             std::process::exit(0);
         }
     }
@@ -70,6 +115,7 @@ fn main() {
     let mut show_weeks_total = false;
     let mut is_year_mode = false;
     let mut interactive_mode = false;
+    let mut show_events = false;
 
     for arg in &args {
         if !arg.starts_with('-') || arg.len() < 2 {
@@ -101,6 +147,8 @@ fn main() {
                 sunday_first = true;
             } else if c == 'i' {
                 interactive_mode = true;
+            } else if c == 'd' {
+                show_events = true;
             } else if c == 'e' {
                 if !lang_overridden {
                     is_ru = false;
@@ -156,14 +204,16 @@ fn main() {
         cols_count = 1;
     }
 
+    let event_storage = load_events();
+
     if interactive_mode {
         crossterm::terminal::enable_raw_mode().unwrap();
-        // Полностью очищаем экран и прячем курсор, чтобы не мерцал
-        execute!(stdout(), Clear(ClearType::All), Hide).unwrap();
+        // ИСПРАВЛЕНИЕ: Включаем изолированный буфер экрана (EnterAlternateScreen)
+        execute!(stdout(), EnterAlternateScreen, Hide).unwrap();
         
         loop {
-            // Возвращаем курсор в начало координат перед рендером
-            execute!(stdout(), MoveTo(0, 0)).unwrap();
+            // ИСПРАВЛЕНИЕ: Тотально чистим весь экран перед кадром, убирая любые наплывы строк
+            execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).unwrap();
             
             let mut months_to_render = Vec::new();
             let mut y = start_year;
@@ -180,8 +230,7 @@ fn main() {
 
             let chunks: Vec<&[(i32, i32)]> = months_to_render.chunks(cols_count).collect();
             for (i, chunk) in chunks.iter().enumerate() {
-                // Вызываем специальный интерактивный принтер с \r\n
-                print_months_row_interactive(chunk, is_ru, now, use_border, sunday_first, is_year_mode);
+                print_months_row_interactive(chunk, is_ru, now, use_border, sunday_first, is_year_mode, show_events, &event_storage);
                 if i < chunks.len() - 1 {
                     print!("\r\n");
                 }
@@ -198,9 +247,11 @@ fn main() {
                     }
                 }
             }
+
+            if show_events {
+                print_events_list_interactive(&months_to_render, &event_storage);
+            }
             
-            // Чистим всё ниже нашего выведенного календаря
-            execute!(stdout(), Clear(ClearType::FromCursorDown)).unwrap();
             stdout().flush().unwrap();
 
             if let Event::Key(key) = read().unwrap() {
@@ -210,17 +261,26 @@ fn main() {
                             break;
                         }
                         KeyCode::Right | KeyCode::Up => {
-                            start_month += 1;
-                            if start_month > 12 {
-                                start_month = 1;
+                            // Если мы в режиме отображения целого года (-g / -x), листаем сразу на ГОД
+                            if is_year_mode {
                                 start_year += 1;
+                            } else {
+                                start_month += 1;
+                                if start_month > 12 {
+                                    start_month = 1;
+                                    start_year += 1;
+                            }
                             }
                         }
                         KeyCode::Left | KeyCode::Down => {
-                            start_month -= 1;
-                            if start_month < 1 {
-                                start_month = 12;
+                            if is_year_mode {
                                 start_year -= 1;
+                            } else {
+                                start_month -= 1;
+                                if start_month < 1 {
+                                    start_month = 12;
+                                    start_year -= 1;
+                                }
                             }
                         }
                         _ => {}
@@ -229,12 +289,11 @@ fn main() {
             }
         }
         
-        // Восстанавливаем курсор и нормальный режим терминала
-        execute!(stdout(), Show).unwrap();
+        // ИСПРАВЛЕНИЕ: Закрываем альтернативный экран и возвращаем терминал в исходный вид
+        execute!(stdout(), Show, LeaveAlternateScreen).unwrap();
         crossterm::terminal::disable_raw_mode().unwrap();
-        println!(); 
     } else {
-        // Обычный CLI режим без возвратов каретки
+        // Обычный CLI режим
         let mut months_to_render = Vec::new();
         let mut y = start_year;
         let mut m = start_month;
@@ -250,7 +309,7 @@ fn main() {
 
         let chunks: Vec<&[(i32, i32)]> = months_to_render.chunks(cols_count).collect();
         for (i, chunk) in chunks.iter().enumerate() {
-            print_months_row(chunk, is_ru, now, use_border, sunday_first, is_year_mode);
+            print_months_row(chunk, is_ru, now, use_border, sunday_first, is_year_mode, show_events, &event_storage);
             if i < chunks.len() - 1 {
                 println!();
             }
@@ -267,10 +326,14 @@ fn main() {
                 }
             }
         }
+
+        if show_events {
+            print_events_list(&months_to_render, &event_storage);
+        }
     }
 }
 
-fn generate_month_lines(year: i32, month: i32, is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, required_weeks: usize) -> Vec<String> {
+fn generate_month_lines(year: i32, month: i32, is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, required_weeks: usize, show_events: bool, storage: &EventStorage) -> Vec<String> {
     let mut lines = Vec::new();
 
     let month_name = if is_ru { MONTHS_RU[(month - 1) as usize] } else { MONTHS_EN[(month - 1) as usize] };
@@ -325,13 +388,17 @@ fn generate_month_lines(year: i32, month: i32, is_ru: bool, today: NaiveDate, us
         let wday = date.weekday();
         let is_today = date == today;
         let is_weekend = wday == Weekday::Sat || wday == Weekday::Sun;
+        let has_event = show_events && storage.events.contains_key(&date);
 
         let mut day_str = format!("{:>2}", day);
 
-        if is_today && is_weekend {
-            day_str = format!("{}{}{}{}", INVERT, RED, day_str, RESET);
+        if is_today && has_event {
+            day_str = format!("{}{}{}{}", INVERT, GREEN, day_str, RESET);
         } else if is_today {
-            day_str = format!("{}{}{}", INVERT, day_str, RESET);
+            let color = if is_weekend { RED } else { "" };
+            day_str = format!("{}{}{}{}", INVERT, color, day_str, RESET);
+        } else if has_event {
+            day_str = format!("{}{}{}", GREEN, day_str, RESET);
         } else if is_weekend {
             day_str = format!("{}{}{}", RED, day_str, RESET);
         }
@@ -400,8 +467,7 @@ fn get_required_weeks_for_month(year: i32, month: i32, sunday_first: bool) -> us
     (weekday_offset + total_days + 6) / 7
 }
 
-// Стандартный вывод для CLI режима
-fn print_months_row(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, is_year_mode: bool) {
+fn print_months_row(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, is_year_mode: bool, show_events: bool, storage: &EventStorage) {
     let mut required_weeks = 4;
     if is_year_mode {
         required_weeks = 6;
@@ -416,7 +482,7 @@ fn print_months_row(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_bor
 
     let mut all_months_lines = Vec::new();
     for &(year, month) in chunk {
-        all_months_lines.push(generate_month_lines(year, month, is_ru, today, use_border, sunday_first, required_weeks));
+        all_months_lines.push(generate_month_lines(year, month, is_ru, today, use_border, sunday_first, required_weeks, show_events, storage));
     }
 
     let total_output_rows = if use_border { required_weeks + 5 } else { required_weeks + 2 };
@@ -442,8 +508,7 @@ fn print_months_row(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_bor
     }
 }
 
-// Специальный вывод для интерактивного режима (с жестким возвратом каретки \r\n)
-fn print_months_row_interactive(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, is_year_mode: bool) {
+fn print_months_row_interactive(chunk: &[(i32, i32)], is_ru: bool, today: NaiveDate, use_border: bool, sunday_first: bool, is_year_mode: bool, show_events: bool, storage: &EventStorage) {
     let mut required_weeks = 4;
     if is_year_mode {
         required_weeks = 6;
@@ -458,7 +523,7 @@ fn print_months_row_interactive(chunk: &[(i32, i32)], is_ru: bool, today: NaiveD
 
     let mut all_months_lines = Vec::new();
     for &(year, month) in chunk {
-        all_months_lines.push(generate_month_lines(year, month, is_ru, today, use_border, sunday_first, required_weeks));
+        all_months_lines.push(generate_month_lines(year, month, is_ru, today, use_border, sunday_first, required_weeks, show_events, storage));
     }
 
     let total_output_rows = if use_border { required_weeks + 5 } else { required_weeks + 2 };
@@ -480,8 +545,52 @@ fn print_months_row_interactive(chunk: &[(i32, i32)], is_ru: bool, today: NaiveD
             row_output.push_str(&padded_line);
             row_output.push_str("    ");
         }
-        // ИСПРАВЛЕНИЕ: принудительный возврат каретки \r\n для предотвращения сползания текста
+        // ИСПРАВЛЕНИЕ: Убрали UntilNewLine, вывод идет чистым стримом в альтернативный экран
         print!("{}\r\n", row_output.trim_end());
+    }
+}
+
+fn print_events_list(months: &[(i32, i32)], storage: &EventStorage) {
+    let mut found_any = false;
+    for &(year, month) in months {
+        let start_date = NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap();
+        let end_date = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap() - Duration::days(1)
+        } else {
+            NaiveDate::from_ymd_opt(year, (month + 1) as u32, 1).unwrap() - Duration::days(1)
+        };
+
+        for (date, descs) in storage.events.range(start_date..=end_date) {
+            if !found_any {
+                println!();
+                found_any = true;
+            }
+            for desc in descs {
+                println!("{} - {}", date.format("%d.%m.%Y"), desc);
+            }
+        }
+    }
+}
+
+fn print_events_list_interactive(months: &[(i32, i32)], storage: &EventStorage) {
+    let mut found_any = false;
+    for &(year, month) in months {
+        let start_date = NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap();
+        let end_date = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap() - Duration::days(1)
+        } else {
+            NaiveDate::from_ymd_opt(year, (month + 1) as u32, 1).unwrap() - Duration::days(1)
+        };
+
+        for (date, descs) in storage.events.range(start_date..=end_date) {
+            if !found_any {
+                print!("\r\n");
+                found_any = true;
+            }
+            for desc in descs {
+                print!("{} - {}\r\n", date.format("%d.%m.%Y"), desc);
+            }
+        }
     }
 }
 
