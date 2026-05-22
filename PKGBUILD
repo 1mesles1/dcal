@@ -11,9 +11,14 @@ makedepends=('rust')
 source=("git+$url.git")
 sha256sums=('SKIP')
 
+prepare() {
+  cd "$pkgname"
+  cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
 build() {
   cd "$pkgname"
-  cargo build --release --offline
+  cargo build --release --frozen
 }
 
 package() {
