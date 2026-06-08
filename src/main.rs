@@ -5,6 +5,7 @@ use std::io::{stdout, Write, BufRead, BufReader, stdin};
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::collections::BTreeMap;
+use rustyline::DefaultEditor;
 use crossterm::{
     execute,
     terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
@@ -78,13 +79,13 @@ impl EventDate {
         }
     }
 
-    fn to_display_string(&self, is_ru: bool) -> String {
+    fn to_display_string(&self, _is_ru: bool) -> String {
         match self {
             EventDate::Always => {
-                if is_ru { "[Всегда]".to_string() } else { "[Always]".to_string() }
+                "".to_string() 
             }
             EventDate::Yearly(year) => {
-                if is_ru { format!("[{} год]", year) } else { format!("[Year {}]", year) }
+                format!("{}", year) // Возвращает только 2026
             }
             EventDate::Specific(date) => {
                 date.format("%d.%m.%Y").to_string()
@@ -115,11 +116,13 @@ fn print_help() {
     println!("  -w          Display ISO-8601 week numbers on the left side of the calendar grid.");
     println!("  -d          Enable events display. Highlights days with events in green and");
     println!("              lists descriptions below the grid for the rendered period.");
+    println!("              Overdue events will have their dates highlighted in red.");
+    println!("              Supports global '00.00.0000' (always shown) and yearly '00.00.YYYY' events.");
     println!("              Data file path: ~/.config/dcal/events.txt");
-    println!("              Format: DD.MM.YYYY - event description (e.g., 23.05.2026 - Clean room)");
     println!("  -l          List all existing events from database chronologically.");
     println!("  -a          Interactive event manager console. Features:");
-    println!("              [l] list events, [a] add event with date validation, [d] delete event by index.");
+    println!("              [l] list events, [a] add event (pre-fills today's date, use arrow keys");
+    println!("              to edit, supports YY, 00.00.0000, 00.00.YYYY), [d] delete event by index.");
 }
 
 fn get_config_path() -> (PathBuf, PathBuf) {
@@ -208,46 +211,57 @@ fn handle_interactive_manager(is_ru: bool) {
 // use chrono::Local;
 
 fn handle_sub_add(storage: &mut EventStorage, is_ru: bool) {
-    let today = chrono::Local::now().naive_local().date();
+    let today = chrono::Local::now().date_naive();
     let today_str = today.format("%d.%m.%Y").to_string();
 
-    if is_ru {
-        println!("Сегодня: {}", today_str);
-    } else {
-        println!("Today is: {}", today_str);
-    }
-
-    let msg_date = if is_ru { "Введите дату (ДД.ММ.ГГГГ (ГГ) / 00.00.ГГГГ / 00.00.ГГ) или 'q' для отмены: " } else { "Enter date (DD.MM.YYYY (YY) / 00.00.YYYY / 00.00.YY) or 'q' to cancel: " };
+    let msg_prompt = if is_ru { 
+        "Редактируйте дату и нажмите Enter (или 'q' для отмены): " 
+    } else { 
+        "Edit date and press Enter (or 'q' to cancel): " 
+    };
+    
     let msg_desc = if is_ru { "Введите описание задачи или 'q' для отмены: " } else { "Enter event description or 'q' to cancel: " };
     let msg_err = if is_ru { "Ошибка: Неверный формат даты! Попробуйте снова." } else { "Error: Invalid date format! Please try again." };
     
+    let mut rl = DefaultEditor::new().unwrap();
     let validated_date;
+
+    // Переносим создание буфера предзаполнения, чтобы использовать его в цикле при ошибке ввода
+    let mut initial_date = today_str;
+
     loop {
-        print!("{}", msg_date);
-        stdout().flush().unwrap();
-        let mut input = String::new();
-        stdin().read_line(&mut input).unwrap();
+        // СРАЗУ запускаем ввод с подставленной датой
+        let edited_res = rl.readline_with_initial(msg_prompt, (&initial_date, ""));
+        if edited_res.is_err() { return; }
+        let input = edited_res.unwrap();
         let input = input.trim();
+
         if input == "q" || input == "Q" { return; }
 
-        // Используем наш новый умный парсер, который сам обработает и YY, и нули
         if let Ok(event_date) = EventDate::parse(input) {
             validated_date = event_date;
             break;
-        } else { println!("{}", msg_err); }
+        } else { 
+            println!("{}", msg_err);
+            // Если пользователь ошибся при редактировании, сохраняем его ввод, 
+            // чтобы ему не пришлось переписывать всё заново с нуля
+            initial_date = input.to_string();
+        }
     }
 
     print!("{}", msg_desc);
     stdout().flush().unwrap();
-    let mut desc = String::new();
-    stdin().read_line(&mut desc).unwrap();
+    // --- ПРАВКА ТУТ ---
+    // Передаем msg_desc прямо внутрь readline, чтобы текст подсказки железно вывелся на экран
+    let desc_res = rl.readline(msg_desc);
+    if desc_res.is_err() { return; }
+    let desc = desc_res.unwrap();
     let desc = desc.trim().to_string();
-    if desc == "q" || desc == "Q" { return; }
+    if desc == "q" || desc == "Q" || desc.is_empty() { return; }
 
     storage.events.entry(validated_date.clone()).or_insert_with(Vec::new).push(desc);
     save_all_events(storage);
     
-    // Красиво выводим то, что ввёл пользователь (нули или обычную дату)
     let formatted_date = validated_date.to_formatted_string(is_ru);
     if is_ru {
         println!("Успешно добавлено на {}!", formatted_date);
@@ -328,7 +342,7 @@ fn main() {
             print_help();
             std::process::exit(0);
         } else if arg == "-v" || arg == "--version" {
-            println!("dcal version 0.7.1");
+            println!("dcal version 0.8.0");
             std::process::exit(0);
         }
     }
@@ -781,6 +795,8 @@ fn print_months_row_interactive(chunk: &[(i32, i32)], is_ru: bool, today: NaiveD
 
 fn print_events_list(is_ru: bool, months: &[(i32, i32)], storage: &EventStorage) {
     let mut header_printed = false;
+    // Получаем сегодняшнюю дату для сравнения дедлайнов
+    let today = chrono::Local::now().date_naive();
 
     let ensure_header = |hp: &mut bool| {
         if !*hp {
@@ -789,15 +805,82 @@ fn print_events_list(is_ru: bool, months: &[(i32, i32)], storage: &EventStorage)
         }
     };
 
+    // 1. Выводим всегда актуальные задачи (обычный цвет)
+    if let Some(descs) = storage.events.get(&EventDate::Always) {
+        for desc in descs {
+            ensure_header(&mut header_printed);
+            println!("{}", desc); // Чистый текст: Следи за собой
+        }
+    }
+
+    let mut rendered_years = Vec::new();
+    for &(year, _) in months {
+        if !rendered_years.contains(&year) {
+            rendered_years.push(year);
+        }
+    }
+
+    // 2. Выводим задачи на год (обычный цвет)
+    for year in rendered_years {
+        if let Some(descs) = storage.events.get(&EventDate::Yearly(year)) {
+            for desc in descs {
+                ensure_header(&mut header_printed);
+                println!("{} - {}", EventDate::Yearly(year).to_display_string(is_ru), desc);
+            }
+        }
+    }
+
+    // 3. Выводим обычные задачи с логикой цветов
+    for &(year, month) in months {
+        let start_date = NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap();
+        let end_date = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap() - Duration::days(1)
+        } else {
+            NaiveDate::from_ymd_opt(year, (month + 1) as u32, 1).unwrap() - Duration::days(1)
+        };
+
+        for (event_date, descs) in &storage.events {
+            if let EventDate::Specific(date) = event_date {
+                if date >= &start_date && date <= &end_date {
+                    for desc in descs {
+                        ensure_header(&mut header_printed);
+                        
+                        // Определяем цвет только для самой даты
+                        let date_str = date.format("%d.%m.%Y").to_string();
+                        let colored_date = if date < &today {
+                            format!("{}{}{}", RED, date_str, RESET) // Просрочена -> Красный
+                        } else if date == &today {
+                            format!("{}{}{}", GREEN, date_str, RESET) // Сегодня -> Зеленый
+                        } else {
+                            date_str // Будущая -> Обычный
+                        };
+
+                        println!("{} - {}", colored_date, desc);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn print_events_list_interactive(is_ru: bool, months: &[(i32, i32)], storage: &EventStorage) {
+    let mut header_printed = false;
+    let today = chrono::Local::now().date_naive();
+
+    let ensure_header = |hp: &mut bool| {
+        if !*hp {
+            print!("\r\n");
+            *hp = true;
+        }
+    };
+
     // 1. Выводим всегда актуальные задачи
     if let Some(descs) = storage.events.get(&EventDate::Always) {
         for desc in descs {
             ensure_header(&mut header_printed);
-            // ЗАМЕНИЛИ ТУТ:
-            println!("{} - {}", EventDate::Always.to_display_string(is_ru), desc);
+            print!("{}\r\n", desc);
         }
     }
-
     let mut rendered_years = Vec::new();
     for &(year, _) in months {
         if !rendered_years.contains(&year) {
@@ -810,70 +893,12 @@ fn print_events_list(is_ru: bool, months: &[(i32, i32)], storage: &EventStorage)
         if let Some(descs) = storage.events.get(&EventDate::Yearly(year)) {
             for desc in descs {
                 ensure_header(&mut header_printed);
-                // ЗАМЕНИЛИ ТУТ:
-                println!("{} - {}", EventDate::Yearly(year).to_display_string(is_ru), desc);
-            }
-        }
-    }
-
-    // 3. Выводим обычные задачи
-    for &(year, month) in months {
-        let start_date = NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap();
-        let end_date = if month == 12 {
-            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap() - Duration::days(1)
-        } else {
-            NaiveDate::from_ymd_opt(year, (month + 1) as u32, 1).unwrap() - Duration::days(1)
-        };
-
-        for (event_date, descs) in &storage.events {
-            if let EventDate::Specific(date) = event_date {
-                if date >= &start_date && date <= &end_date {
-                    for desc in descs {
-                        ensure_header(&mut header_printed);
-                        // ЗАМЕНИЛИ ТУТ (используем метод для единообразия):
-                        println!("{} - {}", event_date.to_display_string(is_ru), desc);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn print_events_list_interactive(is_ru: bool, months: &[(i32, i32)], storage: &EventStorage) {
-    let mut header_printed = false;
-
-    let ensure_header = |hp: &mut bool| {
-        if !*hp {
-            print!("\r\n");
-            *hp = true;
-        }
-    };
-
-    if let Some(descs) = storage.events.get(&EventDate::Always) {
-        for desc in descs {
-            ensure_header(&mut header_printed);
-            // ЗАМЕНИЛИ ТУТ:
-            print!("{} - {}\r\n", EventDate::Always.to_display_string(is_ru), desc);
-        }
-    }
-
-    let mut rendered_years = Vec::new();
-    for &(year, _) in months {
-        if !rendered_years.contains(&year) {
-            rendered_years.push(year);
-        }
-    }
-
-    for year in rendered_years {
-        if let Some(descs) = storage.events.get(&EventDate::Yearly(year)) {
-            for desc in descs {
-                ensure_header(&mut header_printed);
-                // ЗАМЕНИЛИ ТУТ:
                 print!("{} - {}\r\n", EventDate::Yearly(year).to_display_string(is_ru), desc);
             }
         }
     }
 
+    // 3. Выводим обычные задачи с цветами
     for &(year, month) in months {
         let start_date = NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap();
         let end_date = if month == 12 {
@@ -887,14 +912,24 @@ fn print_events_list_interactive(is_ru: bool, months: &[(i32, i32)], storage: &E
                 if date >= &start_date && date <= &end_date {
                     for desc in descs {
                         ensure_header(&mut header_printed);
-                        // ЗАМЕНИЛИ ТУТ:
-                        print!("{} - {}\r\n", event_date.to_display_string(is_ru), desc);
+                        
+                        let date_str = date.format("%d.%m.%Y").to_string();
+                        let colored_date = if date < &today {
+                            format!("{}{}{}", RED, date_str, RESET)
+                        } else if date == &today {
+                            format!("{}{}{}", GREEN, date_str, RESET)
+                        } else {
+                            date_str
+                        };
+
+                        print!("{} - {}\r\n", colored_date, desc);
                     }
                 }
             }
         }
     }
 }
+
 
 fn strip_ansi_len(s: &str) -> usize {
     let mut len = 0;

@@ -1,4 +1,4 @@
-# dcal (v0.7.1)
+# dcal (v0.8.0)
 
 A modern, fast, and standalone CLI calendar utility written in Rust. It serves as a drop-in or enhanced replacement for the classic `cal`/`ncal` commands, featuring auto-localization, grid alignment, customizable month ranges, interactive navigation, and todo/event integration.
 
